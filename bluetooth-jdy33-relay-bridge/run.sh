@@ -24,20 +24,36 @@ if [ -f "/data/options.json" ]; then
   export BLE_NAME=$(jq -r '.BLE_NAME // empty' /data/options.json)
   export BLE_WRITE_CHAR=$(jq -r '.BLE_WRITE_CHAR // empty' /data/options.json)
 
-  # CONNECTION_MODE может быть enum ("ON_DEMAND"/"PERSISTENT") или bool
   export CONNECTION_MODE=$(jq -r '.CONNECTION_MODE // empty' /data/options.json)
   export IDLE_DISCONNECT_SEC=$(jq -r '.IDLE_DISCONNECT_SEC // empty' /data/options.json)
+  export PERSISTENT_HEALTH_SEC=$(jq -r '.PERSISTENT_HEALTH_SEC // empty' /data/options.json)
 
   export CMD_ON_HEX=$(jq -r '.CMD_ON_HEX // empty' /data/options.json)
   export CMD_OFF_HEX=$(jq -r '.CMD_OFF_HEX // empty' /data/options.json)
 fi
 
-# ---------- Включим BT-адаптер ----------
-rfkill unblock bluetooth 2>/dev/null || true
-if command -v bluetoothctl >/dev/null 2>&1; then
-  bluetoothctl power on || true
-  bluetoothctl show || true
-fi
+# ---------- Значения по умолчанию ----------
+export MQTT_HOST="${MQTT_HOST:-core-mosquitto}"
+export MQTT_PORT="${MQTT_PORT:-1883}"
+export MQTT_USER="${MQTT_USER:-mqtt}"
+export MQTT_PASS="${MQTT_PASS:-mqtt}"
+export MQTT_PREFIX="${MQTT_PREFIX:-bluetoothrelay}"
+
+export RELAY_NAME="${RELAY_NAME:-Bluetooth JDY-33 Relay}"
+export RELAY_ID="${RELAY_ID:-jdy33_relay}"
+
+export BLE_ADDR="${BLE_ADDR:-}"
+export BLE_NAME="${BLE_NAME:-JDY}"
+export BLE_WRITE_CHAR="${BLE_WRITE_CHAR:-0000ffe1-0000-1000-8000-00805f9b34fb}"
+
+export CONNECTION_MODE="${CONNECTION_MODE:-ON_DEMAND}"
+export IDLE_DISCONNECT_SEC="${IDLE_DISCONNECT_SEC:-5}"
+export PERSISTENT_HEALTH_SEC="${PERSISTENT_HEALTH_SEC:-30}"
+
+export CMD_ON_HEX="${CMD_ON_HEX:-A00101A2}"
+export CMD_OFF_HEX="${CMD_OFF_HEX:-A00100A1}"
+
+# ---------- Включаем Bluetooth-адаптер (если нужно) ----------
 if command -v hciconfig >/dev/null 2>&1; then
   hciconfig hci0 up || true
 fi
@@ -51,5 +67,5 @@ case "$LM" in
   *) MODE_NAME="${CONNECTION_MODE:-ON_DEMAND}";;  # если пришло строкой как есть
 esac
 
-echo "[JDY33] Starting BLE bridge (MODE=${MODE_NAME}, BLE_ADDR=${BLE_ADDR:-}, BLE_NAME=${BLE_NAME:-}, IDLE=${IDLE_DISCONNECT_SEC:-5}s) ..."
+echo "[JDY33] Starting BLE bridge (MODE=${MODE_NAME}, BLE_ADDR=${BLE_ADDR:-?}, BLE_NAME=${BLE_NAME:-}, IDLE=${IDLE_DISCONNECT_SEC:-5}s, HEALTH=${PERSISTENT_HEALTH_SEC:-0}s) ..."
 exec python -u /app/jdy33_mqtt_bridge.py

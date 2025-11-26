@@ -1,5 +1,5 @@
 name: Bluetooth JDY-33 Relay Bridge
-version: "1.1.3"
+version: "1.1.4"
 slug: bluetooth-jdy33-relay-bridge
 description: MQTT-мост для JDY-33 по BLE (GATT) с автодобавлением свитча в Home Assistant
 url: https://github.com/alexanderznamensky/home-assistant-addons/tree/main/bluetooth-jdy33-relay-bridge
@@ -14,11 +14,36 @@ host_network: true
 host_dbus: true
 bluetooth: true
 udev: true
-privileged:
-  - NET_ADMIN
-  - SYS_ADMIN
-  - SYS_RAWIO
-  - DAC_READ_SEARCH
+
+options:
+  MQTT_HOST: "core-mosquitto"
+  MQTT_PORT: 1883
+  MQTT_USER: "mqtt"
+  MQTT_PASS: "mqtt"
+  MQTT_PREFIX: "bluetoothrelay"
+
+  RELAY_NAME: "Bluetooth JDY-33 Relay"
+  RELAY_ID: "jdy33_relay"
+
+  # Можно оставить пустым и искать по имени
+  BLE_ADDR: "01:B6:EC:11:EF:26"
+  BLE_NAME: "JDY"
+  BLE_WRITE_CHAR: "0000ffe1-0000-1000-8000-00805f9b34fb"
+
+  # Режим соединения с JDY-33:
+  #   ON_DEMAND   — подключение по требованию и авто-отключение
+  #   PERSISTENT  — постоянное соединение с health-check
+  CONNECTION_MODE: "ON_DEMAND"
+
+  # Таймаут простоя для ON_DEMAND (секунды)
+  IDLE_DISCONNECT_SEC: 5
+
+  # Интервал health-check для PERSISTENT (секунды; 0 — выключить проверки)
+  PERSISTENT_HEALTH_SEC: 30
+
+  # HEX-команды (без пробелов)
+  CMD_ON_HEX: "A00101A2"
+  CMD_OFF_HEX: "A00100A1"
 
 schema:
   MQTT_HOST: str?
@@ -31,25 +56,8 @@ schema:
   BLE_ADDR: str?
   BLE_NAME: str?
   BLE_WRITE_CHAR: str?
-  CONNECTION_MODE: list(ON_DEMAND|PERSISTENT)?
-  # CONNECTION_MODE: bool?
+  CONNECTION_MODE: list(ON_DEMAND|PERSISTENT|true|false)?
   IDLE_DISCONNECT_SEC: int?
+  PERSISTENT_HEALTH_SEC: int?
   CMD_ON_HEX: str?
   CMD_OFF_HEX: str?
-
-options:
-  MQTT_HOST: "core-mosquitto"
-  MQTT_PORT: 1883
-  MQTT_USER: "mqtt"
-  MQTT_PASS: "mqtt"
-  MQTT_PREFIX: "bluetoothrelay"
-  RELAY_NAME: "Bluetooth JDY-33 Relay"
-  RELAY_ID: "jdy33_relay"
-  BLE_ADDR: "01:B6:EC:11:EF:26"
-  BLE_NAME: "JDY"
-  BLE_WRITE_CHAR: "0000ffe1-0000-1000-8000-00805f9b34fb"
-  CONNECTION_MODE: "ON_DEMAND"
-  IDLE_DISCONNECT_SEC: 5
-  CMD_ON_HEX: "A00101A2"
-  CMD_OFF_HEX: "A00100A1"
-
