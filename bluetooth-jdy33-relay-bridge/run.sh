@@ -30,6 +30,8 @@ if [ -f "/data/options.json" ]; then
 
   export CMD_ON_HEX=$(jq -r '.CMD_ON_HEX // empty' /data/options.json)
   export CMD_OFF_HEX=$(jq -r '.CMD_OFF_HEX // empty' /data/options.json)
+
+  export WRITE_RETRY=$(jq -r '.WRITE_RETRY // empty' /data/options.json)
 fi
 
 # ---------- Значения по умолчанию ----------
@@ -53,6 +55,8 @@ export PERSISTENT_HEALTH_SEC="${PERSISTENT_HEALTH_SEC:-30}"
 export CMD_ON_HEX="${CMD_ON_HEX:-A00101A2}"
 export CMD_OFF_HEX="${CMD_OFF_HEX:-A00100A1}"
 
+export WRITE_RETRY="${WRITE_RETRY:-2}"
+
 # ---------- Включаем Bluetooth-адаптер (если нужно) ----------
 if command -v hciconfig >/dev/null 2>&1; then
   hciconfig hci0 up || true
@@ -67,5 +71,5 @@ case "$LM" in
   *) MODE_NAME="${CONNECTION_MODE:-ON_DEMAND}";;  # если пришло строкой как есть
 esac
 
-echo "[JDY33] Starting BLE bridge (MODE=${MODE_NAME}, BLE_ADDR=${BLE_ADDR:-?}, BLE_NAME=${BLE_NAME:-}, IDLE=${IDLE_DISCONNECT_SEC:-5}s, HEALTH=${PERSISTENT_HEALTH_SEC:-0}s) ..."
+echo "[JDY33] Starting BLE bridge (MODE=${MODE_NAME}, BLE_ADDR=${BLE_ADDR:-?}, BLE_NAME=${BLE_NAME:-}, IDLE=${IDLE_DISCONNECT_SEC:-5}s, HEALTH=${PERSISTENT_HEALTH_SEC:-0}s, WRITE_RETRY=${WRITE_RETRY:-2}) ..."
 exec python -u /app/jdy33_mqtt_bridge.py

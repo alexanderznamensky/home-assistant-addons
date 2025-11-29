@@ -1,5 +1,5 @@
 name: Bluetooth JDY-33 Relay Bridge
-version: "1.1.4"
+version: "1.2.0"
 slug: bluetooth-jdy33-relay-bridge
 description: MQTT-мост для JDY-33 по BLE (GATT) с автодобавлением свитча в Home Assistant
 url: https://github.com/alexanderznamensky/home-assistant-addons/tree/main/bluetooth-jdy33-relay-bridge
@@ -33,7 +33,7 @@ options:
   # Режим соединения с JDY-33:
   #   ON_DEMAND   — подключение по требованию и авто-отключение
   #   PERSISTENT  — постоянное соединение с health-check
-  CONNECTION_MODE: "ON_DEMAND"
+  CONNECTION_MODE: "PERSISTENT"
 
   # Таймаут простоя для ON_DEMAND (секунды)
   IDLE_DISCONNECT_SEC: 5
@@ -44,6 +44,9 @@ options:
   # HEX-команды (без пробелов)
   CMD_ON_HEX: "A00101A2"
   CMD_OFF_HEX: "A00100A1"
+
+  # (опционально) Макс. число повторов записи при ошибке
+  WRITE_RETRY: 2
 
 schema:
   MQTT_HOST: str?
@@ -61,3 +64,4 @@ schema:
   PERSISTENT_HEALTH_SEC: int?
   CMD_ON_HEX: str?
   CMD_OFF_HEX: str?
+  WRITE_RETRY: int?

@@ -1,14 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-MQTT → BLE мост для JDY-33.
-Поддерживает два режима:
-  - ON_DEMAND  — подключаемся к реле по требованию и отключаемся через IDLE_DISCONNECT_SEC.
-  - PERSISTENT — держим соединение и следим за ним health-чеком PERSISTENT_HEALTH_SEC.
-"""
 
 import os
 import time
+import threading
 import binascii
 import json
 import asyncio
@@ -16,137 +11,129 @@ import signal
 import atexit
 from typing import Optional
 
-from threading import Thread, Lock
 import paho.mqtt.client as mqtt
 from paho.mqtt.client import CallbackAPIVersion, MQTTv311
+from threading import Thread, Lock
 
 
 # ---------- helpers ----------
 
-def env_or(name: str, default: str) -> str:
+def env_or(name: str, default: str):
     v = os.getenv(name)
     return v if (v is not None and v != "") else default
 
 
-# ---------- config from env ----------
+# ---------- config ----------
 
 MQTT_HOST = env_or("MQTT_HOST", "core-mosquitto")
 MQTT_PORT = int(env_or("MQTT_PORT", "1883"))
 MQTT_USER = env_or("MQTT_USER", "")
 MQTT_PASS = env_or("MQTT_PASS", "")
-MQTT_PREFIX = env_or("MQTT_PREFIX", "bluetoothrelay")
+MQTT_PREFIX = env_or("MQTT_PREFIX", "jdy33relay").rstrip("/")
 
-RELAY_NAME = env_or("RELAY_NAME", "Bluetooth JDY-33 Relay")
+RELAY_NAME = env_or("RELAY_NAME", "JDY-33 Relay")
 RELAY_ID = env_or("RELAY_ID", "jdy33_relay")
 
 BLE_ADDR = env_or("BLE_ADDR", "").strip()
-BLE_NAME = env_or("BLE_NAME", "").strip()
+BLE_NAME = env_or("BLE_NAME", "JDY").strip()
 BLE_WRITE_CHAR = env_or("BLE_WRITE_CHAR", "0000ffe1-0000-1000-8000-00805f9b34fb")
 
-CONNECTION_MODE_RAW = env_or("CONNECTION_MODE", "ON_DEMAND").strip()
-LM = CONNECTION_MODE_RAW.lower()
-if LM in ("persistent", "true", "1", "yes", "on"):
-  CONNECTION_MODE = "PERSISTENT"
+# CONNECTION_MODE: поддерживаем enum и/или bool
+raw_mode = env_or("CONNECTION_MODE", "ON_DEMAND").strip()
+lm = raw_mode.lower()
+if lm in ("persistent", "true", "1", "yes", "on"):
+    CONNECTION_MODE = "PERSISTENT"
+elif lm in ("on_demand", "false", "0", "no", "off", ""):
+    CONNECTION_MODE = "ON_DEMAND"
 else:
-  CONNECTION_MODE = "ON_DEMAND"
+    CONNECTION_MODE = raw_mode.upper()
 
-IDLE_DISCONNECT_SEC = int(env_or("IDLE_DISCONNECT_SEC", "5"))
-PERSISTENT_HEALTH_SEC = int(env_or("PERSISTENT_HEALTH_SEC", "30"))
+IDLE_DISCONNECT_SEC = int(env_or("IDLE_DISCONNECT_SEC", "5"))  # ON_DEMAND idle
+PERSISTENT_HEALTH_SEC = int(env_or("PERSISTENT_HEALTH_SEC", "30"))  # health-check в PERSISTENT
+
+CONNECT_RETRY_SEC = int(env_or("CONNECT_RETRY_SEC", "5"))
+WRITE_RETRY = int(env_or("WRITE_RETRY", "2"))
+WRITE_TIMEOUT_SEC = float(env_or("WRITE_TIMEOUT_SEC", "1.5"))  # таймаут одной попытки записи
 
 CMD_ON_HEX = env_or("CMD_ON_HEX", "A00101A2").replace(" ", "")
 CMD_OFF_HEX = env_or("CMD_OFF_HEX", "A00100A1").replace(" ", "")
 
-CONNECT_RETRY_SEC = 5
-
-
-def hex_to_bytes(s: str) -> bytes:
-    s = s.replace(" ", "")
-    return binascii.unhexlify(s)
-
-
-CMD_ON = hex_to_bytes(CMD_ON_HEX)
-CMD_OFF = hex_to_bytes(CMD_OFF_HEX)
-
-
-# MQTT topics
+CMD_TOPIC = f"{MQTT_PREFIX}/command"
 STATE_TOPIC = f"{MQTT_PREFIX}/state"
-CMD_TOPIC = f"{MQTT_PREFIX}/set"
 AVAIL_TOPIC = f"{MQTT_PREFIX}/availability"
 DISCOVERY_TOPIC = f"homeassistant/switch/{RELAY_ID}/config"
+DISCOVERY_PAYLOAD = {
+    "name": RELAY_NAME,
+    "unique_id": RELAY_ID,
+    "command_topic": CMD_TOPIC,
+    "state_topic": STATE_TOPIC,
+    "availability_topic": AVAIL_TOPIC,
+    "payload_on": "ON",
+    "payload_off": "OFF",
+    "state_on": "ON",
+    "state_off": "OFF",
+    "retain": True,
+}
 
 
 # ---------- BLE transport ----------
 
 class BLETransport:
     """
-    Обёртка вокруг bleak с отдельным event loop и health-check.
+    BLE через bleak с фоновым event loop.
+    Режимы:
+      - ON_DEMAND: ленивое подключение, авто-отключение после IDLE_DISCONNECT_SEC.
+      - PERSISTENT: держим подключение постоянно и следим health-check-ом.
     """
 
-    def __init__(self, ble_addr: str, write_char: str, ble_name: str = "", health_interval: int = 0):
+    def __init__(self, ble_addr: str, write_char: str, ble_name: str = ""):
         self.ble_addr = (ble_addr or "").strip()
         self.ble_name = (ble_name or "").strip()
         self.write_char = write_char
 
+        self._client = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[Thread] = None
-        self._client = None
         self._connect_lock = Lock()
 
+        self._idle_timer: Optional[threading.Timer] = None
         self._last_activity = 0.0
-        self._idle_thread: Optional[Thread] = None
         self._stopping = False
 
-        self._health_interval = max(0, int(health_interval or 0))
         self._health_thread: Optional[Thread] = None
 
-        self._start_loop()
+    # --- loop management ---
 
-    # -- event loop management --
-
-    def _start_loop(self):
+    def _ensure_loop(self):
         if self._loop is not None:
             return
-
-        def _runner():
-            self._loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self._loop)
-            self._loop.run_forever()
-
-        self._thread = Thread(target=_runner, daemon=True)
+        self._loop = asyncio.new_event_loop()
+        self._thread = Thread(target=self._loop.run_forever, daemon=True)
         self._thread.start()
 
-        # ждём пока цикл поднимется
-        while self._loop is None:
-            time.sleep(0.05)
-
-    def _run_coro(self, coro):
-        if self._loop is None:
-            raise RuntimeError("BLE loop not started")
+    def _run(self, coro, timeout: float = 20.0):
+        self._ensure_loop()
         fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        return fut.result()
+        return fut.result(timeout=timeout)
 
-    # -- BLE helpers (async) --
+    # --- async helpers ---
 
-    async def _ac_scan_pick(self) -> Optional[str]:
+    async def _ac_scan_pick(self):
         from bleak import BleakScanner
-
         devices = await BleakScanner.discover(timeout=8.0)
+        # приоритет: точное имя -> подстрока -> JDY-алиасы
         if self.ble_name:
-            # точное совпадение имени
             for d in devices:
                 if (d.name or "").strip() == self.ble_name:
                     return d.address
-            # подстрока
             for d in devices:
                 n = (d.name or "").strip()
                 if self.ble_name.lower() in n.lower():
                     return d.address
 
-        # если BLE_ADDR уже задан — просто возвращаем его
         if self.ble_addr:
             return self.ble_addr
 
-        # fallback: первый JDY-подобный
         for d in devices:
             n = (d.name or "").strip().lower()
             if "jdy" in n or "bt05" in n:
@@ -154,11 +141,12 @@ class BLETransport:
         return None
 
     async def _ac_connect(self):
-        from bleak import BleakClient
+        from bleak import BleakClient, BleakScanner
 
+        # если уже есть клиент — проверим
         if self._client is not None:
             try:
-                if await self._client.is_connected():
+                if self._client.is_connected:
                     return
             except Exception:
                 try:
@@ -169,14 +157,35 @@ class BLETransport:
 
         addr = self.ble_addr
         if not addr:
+            # нет адреса — найдём через скан
             addr = await self._ac_scan_pick()
             if not addr:
-                raise RuntimeError("Не найдено подходящее BLE-устройство JDY-33")
+                raise RuntimeError("BLE: устройство не найдено при сканировании (задайте BLE_ADDR или BLE_NAME).")
+            print(f"[BLE] Found via scan: {addr}")
             self.ble_addr = addr
 
-        client = BleakClient(addr)
-        await client.connect(timeout=10.0)
-        self._client = client
+        # Попытка №1: прямое подключение
+        try:
+            self._client = BleakClient(addr, timeout=10.0)
+            await self._client.connect()
+            print("[BLE] Connected")
+            return
+        except Exception as e:
+            print(f"[BLE] Connect failed ({e}); rescanning and retrying...")
+
+        # Попытка №2: сделать короткий скан, затем повторить connect
+        try:
+            try:
+                await BleakScanner.discover(timeout=6.0)
+            except Exception:
+                pass
+            self._client = BleakClient(addr, timeout=10.0)
+            await self._client.connect()
+            print("[BLE] Connected (after rescan)")
+        except Exception as e2:
+            # окончательный фейл — пробросим наверх
+            self._client = None
+            raise RuntimeError(f"BLE: не удалось подключиться ко второму разу: {e2}")
 
     async def _ac_disconnect(self):
         if self._client is not None:
@@ -187,210 +196,221 @@ class BLETransport:
         self._client = None
 
     async def _ac_write(self, data: bytes):
-        if self._client is None:
-            await self._ac_connect()
+        if not self._client or not self._client.is_connected:
+            raise RuntimeError("BLE: клиент не подключён")
         await self._client.write_gatt_char(self.write_char, data, response=False)
 
     async def _ac_is_connected(self) -> bool:
-        if self._client is None:
-            return False
+        return bool(self._client and self._client.is_connected)
+
+    # --- idle timer (ON_DEMAND) ---
+
+    def _arm_idle_timer(self):
+        if self._stopping:
+            return
+        if CONNECTION_MODE == "PERSISTENT":
+            return  # idle-таймер не нужен
+        if IDLE_DISCONNECT_SEC <= 0:
+            return
+        if self._idle_timer:
+            self._idle_timer.cancel()
+        self._idle_timer = threading.Timer(IDLE_DISCONNECT_SEC, self._idle_disconnect_if_idle)
+        self._idle_timer.daemon = True
+        self._idle_timer.start()
+
+    def _idle_disconnect_if_idle(self):
         try:
-            return await self._client.is_connected()
-        except Exception:
-            return False
-
-    # -- idle / health timers --
-
-    def _cancel_idle_thread(self):
-        t = self._idle_thread
-        self._idle_thread = None
-        if t is not None:
-            # потоку просто дадим закончить; таймер у нас "ручной"
+            if self._stopping or CONNECTION_MODE == "PERSISTENT":
+                return
+            now = time.time()
+            if (now - self._last_activity) >= IDLE_DISCONNECT_SEC:
+                try:
+                    self._run(self._ac_disconnect(), timeout=5.0)
+                    print("[BLE] Idle disconnect")
+                except Exception as e:
+                    print(f"[BLE] Idle disconnect error: {e}")
+        finally:
             pass
 
-    def _idle_worker(self, started_at: float):
-        time.sleep(IDLE_DISCONNECT_SEC)
-        if self._stopping or CONNECTION_MODE != "ON_DEMAND":
-            return
-        # если с тех пор не было активности — разъединяемся
-        if self._last_activity <= started_at:
-            print("[BLE] Idle timeout, disconnecting...")
-            try:
-                self._run_coro(self._ac_disconnect())
-            except Exception as e:
-                print(f"[BLE] Idle disconnect error: {e}")
+    # --- health-check (PERSISTENT) ---
 
-    def _bump_idle(self):
-        self._last_activity = time.time()
-        if CONNECTION_MODE != "ON_DEMAND":
+    def _health_worker(self):
+        if PERSISTENT_HEALTH_SEC <= 0:
             return
-        self._cancel_idle_thread()
-        self._idle_thread = Thread(
-            target=self._idle_worker,
-            args=(self._last_activity,),
-            daemon=True,
-        )
-        self._idle_thread.start()
+        while not self._stopping:
+            if CONNECTION_MODE == "PERSISTENT":
+                try:
+                    ok = self.healthy()
+                    if not ok:
+                        print("[BLE] Health-check: reconnect...")
+                        with self._connect_lock:
+                            try:
+                                self._run(self._ac_disconnect(), timeout=3.0)
+                            except Exception:
+                                pass
+                            try:
+                                self._run(self._ac_connect(), timeout=20.0)
+                            except Exception as e:
+                                print(f"[BLE] Health-check connect error: {e}")
+                except Exception as e:
+                    print(f"[BLE] Health-check error: {e}")
+            for _ in range(PERSISTENT_HEALTH_SEC):
+                if self._stopping:
+                    return
+                time.sleep(1)
 
-    def _start_health_monitor(self):
-        if self._health_interval <= 0:
+    def _ensure_health_thread(self):
+        if PERSISTENT_HEALTH_SEC <= 0:
             return
         if self._health_thread and self._health_thread.is_alive():
             return
-
-        def _loop():
-            while not self._stopping:
-                if CONNECTION_MODE == "PERSISTENT":
-                    try:
-                        if not self.healthy():
-                            print("[BLE] Health-check: reconnect...")
-                            try:
-                                self.ensure_connected()
-                            except Exception as e:
-                                print(f"[BLE] Health-check connect error: {e}")
-                    except Exception as e:
-                        print(f"[BLE] Health-check error: {e}")
-                # спим маленькими шагами, чтобы быстрее завершаться
-                for _ in range(self._health_interval):
-                    if self._stopping:
-                        return
-                    time.sleep(1)
-
-        self._health_thread = Thread(target=_loop, daemon=True)
+        self._health_thread = Thread(target=self._health_worker, daemon=True)
         self._health_thread.start()
 
-    # -- public API --
+    # --- facade API ---
 
     def ensure_connected(self):
         with self._connect_lock:
-            self._run_coro(self._ac_connect())
+            if self._stopping:
+                raise RuntimeError("BLE: stopping")
+            if not self.healthy():
+                self._run(self._ac_connect(), timeout=25.0)
 
-    def send(self, data: bytes):
+    def open(self):
         if CONNECTION_MODE == "PERSISTENT":
             self.ensure_connected()
-            self._start_health_monitor()
-
-        self._run_coro(self._ac_write(data))
-        self._bump_idle()
-
-    def healthy(self) -> bool:
-        try:
-            return self._run_coro(self._ac_is_connected())
-        except Exception:
-            return False
+            self._ensure_health_thread()
 
     def close(self):
         self._stopping = True
-        self._cancel_idle_thread()
         try:
-            self._run_coro(self._ac_disconnect())
+            if self._idle_timer:
+                self._idle_timer.cancel()
         except Exception:
             pass
-        if self._loop is not None:
-            self._loop.call_soon_threadsafe(self._loop.stop)
+        try:
+            self._run(self._ac_disconnect(), timeout=5.0)
+        except Exception:
+            pass
+
+    def healthy(self) -> bool:
+        try:
+            return bool(self._run(self._ac_is_connected(), timeout=2.0))
+        except Exception:
+            return False
+
+    def write(self, data: bytes) -> None:
+        """
+        Пишем с быстрым таймаутом и переподключением при ошибке.
+        """
+        last_err: Optional[Exception] = None
+        for attempt in range(1 + WRITE_RETRY):
+            try:
+                self.ensure_connected()
+                self._last_activity = time.time()
+                self._run(self._ac_write(data), timeout=WRITE_TIMEOUT_SEC)
+                self._arm_idle_timer()
+                return
+            except Exception as e:
+                last_err = e
+                print(f"[BLE] write attempt {attempt + 1}/{1 + WRITE_RETRY} failed: {e}")
+                # жёстко переподключаемся
+                try:
+                    self._run(self._ac_disconnect(), timeout=3.0)
+                except Exception:
+                    pass
+                time.sleep(0.2)
+        if last_err:
+            raise last_err
 
 
-# ---------- MQTT bridge ----------
+# ---------- bridge ----------
 
-transport = BLETransport(
-    ble_addr=BLE_ADDR,
-    write_char=BLE_WRITE_CHAR,
-    ble_name=BLE_NAME,
-    health_interval=PERSISTENT_HEALTH_SEC,
-)
+class JDY33Bridge:
+    def __init__(self, transport: BLETransport, mqtt_client: mqtt.Client):
+        self.t = transport
+        self.mqtt = mqtt_client
+        self.state = "OFF"
+        self._stopping = False
 
-_current_state = "OFF"
-_mqtt_client: Optional[mqtt.Client] = None
+    def publish_discovery(self):
+        self.mqtt.publish(DISCOVERY_TOPIC, json.dumps(DISCOVERY_PAYLOAD), retain=True)
+        self.mqtt.publish(AVAIL_TOPIC, "online", retain=True)
+        self.mqtt.publish(STATE_TOPIC, self.state, retain=True)
 
+    def _hexstr_to_bytes(self, hexstr: str) -> bytes:
+        try:
+            return binascii.unhexlify(hexstr)
+        except binascii.Error:
+            raise ValueError(f"Неверная HEX-строка: {hexstr}")
 
-def publish_state():
-    if _mqtt_client is None:
-        return
-    _mqtt_client.publish(STATE_TOPIC, _current_state, retain=True)
+    def _send(self, payload_hex: str) -> bool:
+        data = self._hexstr_to_bytes(payload_hex)
+        for i in range(1 + WRITE_RETRY):
+            try:
+                self.t.write(data)
+                return True
+            except Exception as e:
+                if i >= WRITE_RETRY:
+                    print(f"[JDY33] Ошибка при отправке: {e}")
+                    return False
+                time.sleep(0.2)
+        return False
 
+    def handle_command(self, cmd: str):
+        cmd = cmd.strip().upper()
+        if cmd == "ON":
+            if self._send(CMD_ON_HEX):
+                self.state = "ON"
+                self.mqtt.publish(STATE_TOPIC, "ON", retain=True)
+        elif cmd == "OFF":
+            if self._send(CMD_OFF_HEX):
+                self.state = "OFF"
+                self.mqtt.publish(STATE_TOPIC, "OFF", retain=True)
+        else:
+            print(f"[JDY33] Unknown command: {cmd!r}")
 
-def publish_availability(online: bool):
-    if _mqtt_client is None:
-        return
-    _mqtt_client.publish(AVAIL_TOPIC, "online" if online else "offline", retain=True)
-
-
-def publish_discovery():
-    if _mqtt_client is None:
-        return
-    payload = {
-        "name": RELAY_NAME,
-        "unique_id": RELAY_ID,
-        "command_topic": CMD_TOPIC,
-        "state_topic": STATE_TOPIC,
-        "availability_topic": AVAIL_TOPIC,
-        "payload_on": "ON",
-        "payload_off": "OFF",
-        "state_on": "ON",
-        "state_off": "OFF",
-        "retain": True,
-    }
-    _mqtt_client.publish(DISCOVERY_TOPIC, json.dumps(payload), retain=True)
-
-
-def handle_command(payload: str):
-    global _current_state
-    p = (payload or "").strip().upper()
-    if p in ("1", "ON", "TRUE"):
-        cmd = CMD_ON
-        new_state = "ON"
-    elif p in ("0", "OFF", "FALSE"):
-        cmd = CMD_OFF
-        new_state = "OFF"
-    else:
-        print(f"[MQTT] Unknown payload for command: {payload!r}")
-        return
-
-    print(f"[BLE] send {new_state}...")
-    try:
-        transport.send(cmd)
-        _current_state = new_state
-        publish_state()
-    except Exception as e:
-        print(f"[BLE] Error while sending command: {e}")
-
-
-# ---------- MQTT callbacks ----------
-
-def on_connect(client: mqtt.Client, userdata, flags, rc, properties=None):
-    print(f"[MQTT] Connected with result code {rc}")
-    client.subscribe(CMD_TOPIC)
-    publish_discovery()
-    publish_availability(True)
-    publish_state()
-
-
-def on_message(client: mqtt.Client, userdata, msg: mqtt.MQTTMessage):
-    if msg.topic == CMD_TOPIC:
-        payload = msg.payload.decode("utf-8", "ignore")
-        print(f"[MQTT] CMD {payload!r}")
-        handle_command(payload)
-
-
-def on_disconnect(client: mqtt.Client, userdata, rc, properties=None):
-    print(f"[MQTT] Disconnected (rc={rc})")
-    publish_availability(False)
+    def stop(self):
+        self._stopping = True
+        try:
+            self.mqtt.publish(AVAIL_TOPIC, "offline", retain=True)
+        except Exception:
+            pass
+        try:
+            self.t.close()
+        except Exception:
+            pass
 
 
 # ---------- main ----------
 
 def main():
-    global _mqtt_client
-
-    client = mqtt.Client(
-        client_id=f"jdy33-bridge-{os.getpid()}",
-        protocol=MQTTv311,
-        callback_api_version=CallbackAPIVersion.VERSION2,
-    )
-    _mqtt_client = client
-
+    client = mqtt.Client(protocol=MQTTv311, callback_api_version=CallbackAPIVersion.VERSION2)
     if MQTT_USER:
         client.username_pw_set(MQTT_USER, MQTT_PASS)
+    client.will_set(AVAIL_TOPIC, "offline", retain=True)
+
+    transport = BLETransport(ble_addr=BLE_ADDR, write_char=BLE_WRITE_CHAR, ble_name=BLE_NAME)
+    bridge = JDY33Bridge(transport, client)
+
+    def on_connect(cli, userdata, flags, rc, properties=None):
+        print(f"[MQTT] Connected rc={rc}")
+        cli.subscribe(CMD_TOPIC)
+        bridge.publish_discovery()
+        if CONNECTION_MODE == "PERSISTENT":
+            try:
+                transport.open()
+            except Exception as e:
+                print(f"[BLE] Initial connect failed: {e}")
+
+    def on_message(cli, userdata, msg):
+        payload = msg.payload.decode("utf-8", errors="ignore")
+        print(f"[MQTT] {msg.topic} -> {payload}")
+        bridge.handle_command(payload)
+
+    def on_disconnect(cli, userdata, rc, properties=None):
+        print(f"[MQTT] Disconnected rc={rc}")
+        # доступность поставит will_set, если будет жёсткий отвал
 
     client.on_connect = on_connect
     client.on_message = on_message
@@ -399,11 +419,7 @@ def main():
     def handle_exit(*_a):
         print("[MAIN] Stopping...")
         try:
-            publish_availability(False)
-        except Exception:
-            pass
-        try:
-            transport.close()
+            bridge.stop()
         except Exception:
             pass
         try:
@@ -415,16 +431,18 @@ def main():
     signal.signal(signal.SIGINT, lambda *_a: handle_exit())
     signal.signal(signal.SIGTERM, lambda *_a: handle_exit())
 
-    # MQTT connect loop
     while True:
         try:
             print(f"[MQTT] Connecting to {MQTT_HOST}:{MQTT_PORT} ...")
             client.connect(MQTT_HOST, MQTT_PORT, keepalive=30)
             client.loop_forever(retry_first_connection=True)
         except Exception as e:
-            print(f"[MQTT] Connection error: {e}. Retry in {CONNECT_RETRY_SEC}s")
+            print(f"[MQTT] Ошибка подключения: {e}. Повтор через {CONNECT_RETRY_SEC}s")
             time.sleep(CONNECT_RETRY_SEC)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass
