@@ -1,5 +1,5 @@
 name: Bluetooth JDY-33 Relay Bridge
-version: "1.2.0"
+version: "2.2.3"
 slug: bluetooth-jdy33-relay-bridge
 description: MQTT-мост для JDY-33 по BLE (GATT) с автодобавлением свитча в Home Assistant
 url: https://github.com/alexanderznamensky/home-assistant-addons/tree/main/bluetooth-jdy33-relay-bridge
