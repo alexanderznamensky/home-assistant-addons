@@ -7,6 +7,13 @@ import paho.mqtt.client as mqtt
 from paho.mqtt.client import CallbackAPIVersion, MQTTv311
 from threading import Thread, Lock
 
+from datetime import datetime
+
+def log(msg: str):
+    """Единый логгер с датой/временем."""
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"{ts}: {msg}", flush=True)
+
 # ---------- helpers ----------
 def env_or(name: str, default: str):
     v = os.getenv(name)
@@ -146,16 +153,16 @@ class BLETransport:
             if not addr:
                 raise RuntimeError("BLE: устройство не найдено (скан JDY). "
                                    "Укажите BLE_ADDR или BLE_NAME в конфиге.")
-            print(f"[BLE] Found via scan: {addr}")
+            log(f"BLE: Found via scan: {addr}")
             self.ble_addr = addr
 
         try:
             self._client = BleakClient(addr, timeout=10.0)
             await self._client.connect()
-            print("[BLE] Connected")
+            log("BLE: Connected")
             return
         except Exception as e:
-            print(f"[BLE] Connect failed ({e}); rescanning and retrying...")
+            log(f"BLE: Connect failed ({e}); rescanning and retrying...")
 
         try:
             try:
@@ -164,7 +171,7 @@ class BLETransport:
                 pass
             self._client = BleakClient(addr, timeout=10.0)
             await self._client.connect()
-            print("[BLE] Connected (after rescan)")
+            log("BLE: Connected (after rescan)")
         except Exception as e2:
             self._client = None
             raise RuntimeError(f"BLE: не удалось подключиться к {addr}: {e2}")
@@ -174,7 +181,7 @@ class BLETransport:
             try:
                 if self._client.is_connected:
                     await self._client.disconnect()
-                    print("[BLE] Disconnected")
+                    log("BLE: Disconnected")
             finally:
                 self._client = None
 
@@ -208,9 +215,9 @@ class BLETransport:
             if (now - self._last_activity) >= IDLE_DISCONNECT_SEC:
                 try:
                     self._run(self._ac_disconnect(), timeout=5.0)
-                    print("[BLE] Idle disconnect")
+                    log("BLE: Idle disconnect")
                 except Exception as e:
-                    print(f"[BLE] Idle disconnect error: {e}")
+                    log(f"BLE: Idle disconnect error: {e}")
         finally:
             pass
 
@@ -223,7 +230,7 @@ class BLETransport:
                 try:
                     ok = self.healthy()
                     if not ok:
-                        print("[BLE] Health-check: reconnect...")
+                        log("BLE: Health-check: reconnect...")
                         with self._connect_lock:
                             try:
                                 self._run(self._ac_disconnect(), timeout=3.0)
@@ -232,9 +239,9 @@ class BLETransport:
                             try:
                                 self._run(self._ac_connect(), timeout=20.0)
                             except Exception as e:
-                                print(f"[BLE] Health-check connect error: {e}")
+                                log(f"BLE: Health-check connect error: {e}")
                 except Exception as e:
-                    print(f"[BLE] Health-check error: {e}")
+                    log(f"BLE: Health-check error: {e}")
             for _ in range(interval):
                 if self._stopping:
                     return
@@ -288,7 +295,7 @@ class BLETransport:
                 return
             except Exception as e:
                 last_err = e
-                print(f"[BLE] write attempt {attempt + 1}/{1 + WRITE_RETRY} failed: {e}")
+                log(f"BLE: write attempt {attempt + 1}/{1 + WRITE_RETRY} failed: {e}")
                 try:
                     self._run(self._ac_disconnect(), timeout=3.0)
                 except Exception:
@@ -306,7 +313,7 @@ class JDY33Bridge:
         self._stopping = False
 
     def publish_discovery(self):
-        print(f"[MQTT] Publishing discovery to {DISCOVERY_TOPIC} ...")
+        log(f"MQTT: Publishing discovery to {DISCOVERY_TOPIC} ...")
         self.mqtt.publish(DISCOVERY_TOPIC, json.dumps(DISCOVERY_PAYLOAD), retain=True)
         self.mqtt.publish(AVAIL_TOPIC, "online", retain=True)
         self.mqtt.publish(STATE_TOPIC, self.state, retain=True)
@@ -325,7 +332,7 @@ class JDY33Bridge:
                 return True
             except Exception as e:
                 if i >= WRITE_RETRY:
-                    print(f"[JDY33] Ошибка при отправке: {e}")
+                    log(f"JDY33: Ошибка при отправке: {e}")
                     return False
                 time.sleep(0.2)
         return False
@@ -339,7 +346,7 @@ class JDY33Bridge:
             if self._send(CMD_OFF_HEX):
                 self.state = "OFF"; self.mqtt.publish(STATE_TOPIC, "OFF", retain=True)
         else:
-            print(f"[JDY33] Unknown command: {cmd!r}")
+            log(f"JDY33: Unknown command: {cmd!r}")
 
     def shutdown(self):
         if self._stopping:
@@ -365,22 +372,22 @@ def main():
     bridge = JDY33Bridge(transport, client)
 
     def on_connect(cli, userdata, flags, rc, properties=None):
-        print(f"[MQTT] Connected rc={rc}")
+        log(f"MQTT: Connected rc={rc}")
         cli.subscribe(CMD_TOPIC)
         bridge.publish_discovery()
         if CONNECTION_MODE == "PERSISTENT":
             try:
                 transport.open()
             except Exception as e:
-                print(f"[BLE] Initial connect failed: {e}")
+                log(f"BLE: Initial connect failed: {e}")
 
     def on_message(cli, userdata, msg):
         payload = msg.payload.decode("utf-8", errors="ignore")
-        print(f"[MQTT] {msg.topic} -> {payload}")
+        log(f"MQTT: {msg.topic} -> {payload}")
         bridge.handle_command(payload)
 
     def on_disconnect(cli, userdata, rc, properties=None):
-        print(f"[MQTT] Disconnected rc={rc}")
+        log(f"MQTT: Disconnected rc={rc}")
 
     client.on_connect = on_connect
     client.on_message = on_message
@@ -388,7 +395,7 @@ def main():
 
     # корректное завершение
     def _graceful_exit(sig, frame):
-        print(f"[SYS] Caught signal {sig}, shutting down...")
+        log(f"SYS: Caught signal {sig}, shutting down...")
         bridge.shutdown()
         time.sleep(0.5)
         os._exit(0)
@@ -399,19 +406,19 @@ def main():
 
     while True:
         try:
-            print(f"[MQTT] Connecting to {MQTT_HOST}:{MQTT_PORT} ...")
+            log(f"MQTT: Connecting to {MQTT_HOST}:{MQTT_PORT} ...")
             client.connect(MQTT_HOST, MQTT_PORT, keepalive=30)
 
             # на всякий случай публикуем discovery сразу после connect
             try:
-                print(f"[MQTT] Publishing discovery to {DISCOVERY_TOPIC} ...")
+                log(f"MQTT: Publishing discovery to {DISCOVERY_TOPIC} ...")
                 bridge.publish_discovery()
             except Exception as e:
-                print(f"[MQTT] Discovery publish error: {e}")
+                log(f"MQTT: Discovery publish error: {e}")
 
             client.loop_forever(retry_first_connection=True)
         except Exception as e:
-            print(f"[MQTT] Ошибка подключения: {e}. Повтор через {CONNECT_RETRY_SEC}s")
+            log(f"MQTT: Ошибка подключения: {e}. Повтор через {CONNECT_RETRY_SEC}s")
             time.sleep(CONNECT_RETRY_SEC)
 
 if __name__ == "__main__":
@@ -419,3 +426,4 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         pass
+
