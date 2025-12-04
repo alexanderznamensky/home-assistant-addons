@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+log() {
+  echo "$(date '+%Y-%m-%d %H:%M:%S') $*"
+}
+
 # ---------- DBus для BlueZ/bleak ----------
 export DBUS_SYSTEM_BUS_ADDRESS=${DBUS_SYSTEM_BUS_ADDRESS:-"unix:path=/run/dbus/system_bus_socket"}
 if [ ! -e "/run/dbus/system_bus_socket" ] && [ -S "/var/run/dbus/system_bus_socket" ]; then
@@ -9,7 +13,7 @@ fi
 
 # ---------- Читаем опции аддона ----------
 if [ -f "/data/options.json" ]; then
-  echo "[JDY33] Loading /data/options.json"
+  log "JDY33: Loading /data/options.json"
 
   export MQTT_HOST=$(jq -r '.MQTT_HOST // empty' /data/options.json)
   export MQTT_PORT=$(jq -r '.MQTT_PORT // empty' /data/options.json)
@@ -71,5 +75,5 @@ case "$LM" in
   *) MODE_NAME="${CONNECTION_MODE:-ON_DEMAND}";;  # если пришло строкой как есть
 esac
 
-echo "[JDY33] Starting BLE bridge (MODE=${MODE_NAME}, BLE_ADDR=${BLE_ADDR:-?}, BLE_NAME=${BLE_NAME:-}, IDLE=${IDLE_DISCONNECT_SEC:-5}s, HEALTH=${PERSISTENT_HEALTH_SEC:-0}s, WRITE_RETRY=${WRITE_RETRY:-2}) ..."
+log "JDY33: Starting BLE bridge (MODE=${MODE_NAME}, BLE_ADDR=${BLE_ADDR:-?}, BLE_NAME=${BLE_NAME:-}, IDLE=${IDLE_DISCONNECT_SEC:-5}s, HEALTH=${PERSISTENT_HEALTH_SEC:-0}s, WRITE_RETRY=${WRITE_RETRY:-2}) ..."
 exec python -u /app/jdy33_mqtt_bridge.py
