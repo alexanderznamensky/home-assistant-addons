@@ -19,11 +19,12 @@ RUN apk add --no-cache git ca-certificates
 
 RUN git clone --depth 1 --branch "${SSC_REF}" https://github.com/AlexxIT/SmartScaleConnect.git .
 
+COPY patches/main.go main.go
 COPY patches/pkg/garmin/auth.go pkg/garmin/auth.go
 COPY patches/pkg/garmin/client.go pkg/garmin/client.go
 
-RUN go fmt ./pkg/garmin
-RUN go build -ldflags "-s -w -X main.version=0.4.5-garmin-di-config-v2" -trimpath -o /out/scaleconnect
+RUN go fmt ./main.go ./pkg/garmin
+RUN go build -ldflags "-s -w" -trimpath -o /out/scaleconnect
 
 FROM ${BUILD_FROM}
 
