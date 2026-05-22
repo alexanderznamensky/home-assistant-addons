@@ -23,7 +23,7 @@ COPY patches/pkg/garmin/auth.go pkg/garmin/auth.go
 COPY patches/pkg/garmin/client.go pkg/garmin/client.go
 
 RUN go fmt ./pkg/garmin
-RUN go build -ldflags "-s -w -X main.version=0.4.4-garmin-di-config" -trimpath -o /out/scaleconnect
+RUN go build -ldflags "-s -w -X main.version=0.4.5-garmin-di-config-v2" -trimpath -o /out/scaleconnect
 
 FROM ${BUILD_FROM}
 
