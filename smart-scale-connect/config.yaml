@@ -1,6 +1,6 @@
-name: Smart Scale Connect Garmin DI
-version: "0.4.4-garmin-di-config"
-slug: smart_scale_connect_garmin_di
+name: Smart Scale Connect Garmin DI v2
+version: "0.4.5-garmin-di-config-v2"
+slug: smart_scale_connect_garmin_di_v2
 description: SmartScaleConnect with patched Garmin DI OAuth2 authorization
 url: "https://github.com/alexanderznamensky/home-assistant-addons/tree/main/smart-scale-connect"
 arch:
