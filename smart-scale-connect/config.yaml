@@ -1,5 +1,5 @@
 name: Smart Scale Connect Garmin DI v2
-version: "0.4.5-garmin-di-config-v2"
+version: "0.4.7-garmin-di-homeassistant-config"
 slug: smart_scale_connect_garmin_di_v2
 description: SmartScaleConnect with patched Garmin DI OAuth2 authorization
 url: "https://github.com/alexanderznamensky/home-assistant-addons/tree/main/smart-scale-connect"
@@ -13,19 +13,9 @@ startup: services
 boot: auto
 init: false
 map:
+  - homeassistant_config:rw
   - addon_config:rw
 options:
-  sleep: "24h"
-  scaleconnect_yaml: |
-    # Example:
-    #
-    # sync_picooc_to_garmin:
-    #   from: picooc picooc@example.com picooc-password
-    #   to: garmin garmin@example.com garmin-password
-    #
-    # sync_from_garmin_1:
-    #   from: garmin garmin@example.com garmin-password
-    #   to: picooc picooc@example.com picooc-password
+  sleep: "6h"
 schema:
   sleep: str
-  scaleconnect_yaml: str
