@@ -3,14 +3,10 @@
 ARG BUILD_FROM
 ARG SSC_REF=master
 
-FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS build
+FROM golang:1.24-alpine AS build
 
-ARG TARGETOS
-ARG TARGETARCH
 ARG SSC_REF
 
-ENV GOOS=${TARGETOS}
-ENV GOARCH=${TARGETARCH}
 ENV CGO_ENABLED=0
 
 WORKDIR /build
@@ -23,8 +19,8 @@ COPY patches/main.go main.go
 COPY patches/pkg/garmin/auth.go pkg/garmin/auth.go
 COPY patches/pkg/garmin/client.go pkg/garmin/client.go
 
-RUN go fmt ./main.go ./pkg/garmin
-RUN go build -ldflags "-s -w" -trimpath -o /out/scaleconnect
+RUN gofmt -w main.go pkg/garmin/auth.go pkg/garmin/client.go
+RUN go build -v -trimpath -ldflags "-s -w" -o /out/scaleconnect .
 
 FROM ${BUILD_FROM}
 
