@@ -57,5 +57,3 @@ The add-on includes:
 icon.png
 logo.png
 ```
-
-These are custom neutral graphics and do not use Garmin, Xiaomi, Picooc, Zepp, or Home Assistant trademarked logos.
