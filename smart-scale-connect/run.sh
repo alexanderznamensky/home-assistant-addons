@@ -1,34 +1,31 @@
 #!/bin/sh
 set -e
 
-cd /config
-
-SLEEP="24h"
+SLEEP="6h"
+CONFIG="/homeassistant/scaleconnect.yaml"
+FALLBACK_CONFIG="/config/scaleconnect.yaml"
 
 if [ -f "/data/options.json" ]; then
   OPT_SLEEP="$(jq --raw-output '.sleep // empty' /data/options.json)"
   if [ -n "$OPT_SLEEP" ] && [ "$OPT_SLEEP" != "null" ]; then
     SLEEP="$OPT_SLEEP"
   fi
-
-  OPT_CONFIG="$(jq --raw-output '.scaleconnect_yaml // empty' /data/options.json)"
-  if [ -n "$OPT_CONFIG" ] && [ "$OPT_CONFIG" != "null" ]; then
-    printf "%s\n" "$OPT_CONFIG" > /config/scaleconnect.yaml
-  fi
 fi
 
-if [ ! -f "/config/scaleconnect.yaml" ]; then
-  echo "ERROR: /config/scaleconnect.yaml not found"
-  echo "Paste your SmartScaleConnect YAML into the add-on option: scaleconnect_yaml"
-  echo "Or create scaleconnect.yaml manually in the add-on config directory."
-  exit 1
+if [ -f "$CONFIG" ]; then
+  echo "Using $CONFIG"
+  cd /homeassistant
+  exec scaleconnect -c "$CONFIG" -i -r "$SLEEP"
 fi
 
-if ! grep -q "from:" /config/scaleconnect.yaml; then
-  echo "ERROR: /config/scaleconnect.yaml looks empty or contains only the sample comments."
-  echo "Open the add-on Configuration tab and paste your real SmartScaleConnect config into scaleconnect_yaml."
-  exit 1
+if [ -f "$FALLBACK_CONFIG" ]; then
+  echo "Using fallback $FALLBACK_CONFIG"
+  cd /config
+  exec scaleconnect -c "$FALLBACK_CONFIG" -i -r "$SLEEP"
 fi
 
-echo "Using /config/scaleconnect.yaml"
-exec scaleconnect -i -r "$SLEEP"
+echo "ERROR: scaleconnect.yaml not found"
+echo "Expected config file: $CONFIG"
+echo "Fallback config file: $FALLBACK_CONFIG"
+echo "Create /homeassistant/scaleconnect.yaml in Home Assistant config directory."
+exit 1
