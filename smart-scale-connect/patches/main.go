@@ -15,7 +15,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const Version = "0.4.6-garmin-di-debug"
+const Version = "0.4.4"
 
 const usage = `Usage of scaleconnect:
 
