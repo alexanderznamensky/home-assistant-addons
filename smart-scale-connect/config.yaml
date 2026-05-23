@@ -12,6 +12,7 @@ arch:
 startup: services
 boot: auto
 init: false
+stdin: true
 map:
   - homeassistant_config:rw
   - addon_config:rw
@@ -19,3 +20,4 @@ options:
   sleep: "6h"
 schema:
   sleep: str
+
