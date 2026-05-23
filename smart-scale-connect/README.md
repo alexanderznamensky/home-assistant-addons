@@ -7,10 +7,9 @@ Patched SmartScaleConnect add-on with updated Garmin authorization.
 Open the add-on **Configuration** tab and paste your SmartScaleConnect config into:
 
 ```yaml
-scaleconnect_yaml: |
-  sync_picooc_to_garmin:
-    from: picooc picooc@example.com picooc-password
-    to: garmin garmin@example.com garmin-password
+sync_picooc_to_garmin:
+  from: picooc picooc@example.com picooc-password
+  to: garmin garmin@example.com garmin-password
 ```
 
 The add-on writes this value to:
